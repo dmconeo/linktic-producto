@@ -1,0 +1,213 @@
+services:
+  # Base de datos para Products Service
+  products-db:
+    image: postgres:15-alpine
+    container_name: products-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: products_db
+      POSTGRES_USER: products_user
+      POSTGRES_PASSWORD: products_pass
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5432:5432"
+    volumes:
+      - products_data:/var/lib/postgresql/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U products_user -d products_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Base de datos para Inventory Service
+  inventory-db:
+    image: postgres:15-alpine
+    container_name: inventory-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: inventory_db
+      POSTGRES_USER: inventory_user
+      POSTGRES_PASSWORD: inventory_pass
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5433:5432"
+    volumes:
+      - inventory_data:/var/lib/postgresql/data
+    networks:
+      - microservices-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U inventory_user -d inventory_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # Products Service - PUERTO 8081 CONSISTENTE
+  products-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: products-service
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      # Database Configuration
+      SPRING_DATASOURCE_URL: jdbc:postgresql://products-db:5432/products_db
+      SPRING_DATASOURCE_USERNAME: products_user
+      SPRING_DATASOURCE_PASSWORD: products_pass
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+
+      # JPA Configuration
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+
+      # Application Configuration
+      SPRING_APPLICATION_NAME: products-service
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8081
+
+      # Logging Configuration
+      LOGGING_LEVEL_COM_MICROSERVICES_PRODUCTS: DEBUG
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_WEB: INFO
+
+      # Actuator Configuration
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics,mappings
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+
+      # OpenAPI Configuration
+      SPRINGDOC_API_DOCS_PATH: /api-docs
+      SPRINGDOC_SWAGGER_UI_PATH: /swagger-ui.html
+
+      # JVM Options
+      JAVA_OPTS: "-Xmx512m -Xms256m -XX:+UseG1GC"
+    depends_on:
+      products-db:
+        condition: service_healthy
+    networks:
+      - microservices-network
+    volumes:
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8081/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # Inventory Service - PUERTO 8082 CONSISTENTE
+  inventory-service:
+    build:
+      context: ../inventory-service
+      dockerfile: Dockerfile
+    container_name: inventory-service
+    restart: unless-stopped
+    ports:
+      - "8082:8082"
+    environment:
+      # Database Configuration
+      SPRING_DATASOURCE_URL: jdbc:postgresql://inventory-db:5432/inventory_db
+      SPRING_DATASOURCE_USERNAME: inventory_user
+      SPRING_DATASOURCE_PASSWORD: inventory_pass
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+
+      # JPA Configuration
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: "true"
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+
+      # Application Configuration
+      SPRING_APPLICATION_NAME: inventory-service
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8082
+
+      # External Services - URL CORREGIDA
+      PRODUCTS_SERVICE_URL: http://products-service:8081
+      PRODUCTS_SERVICE_API_KEY: inventory-service-key
+
+      # Logging Configuration
+      LOGGING_LEVEL_COM_MICROSERVICES_INVENTORY: DEBUG
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_WEB: INFO
+
+      # Actuator Configuration
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info,metrics,mappings
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: always
+
+      # OpenAPI Configuration
+      SPRINGDOC_API_DOCS_PATH: /api-docs
+      SPRINGDOC_SWAGGER_UI_PATH: /swagger-ui.html
+
+      # JVM Options
+      JAVA_OPTS: "-Xmx512m -Xms256m -XX:+UseG1GC"
+    depends_on:
+      inventory-db:
+        condition: service_healthy
+      products-service:
+        condition: service_healthy
+    networks:
+      - microservices-network
+    volumes:
+      - ./logs:/app/logs
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+        reservations:
+          memory: 512M
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8082/actuator/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # PgAdmin para administración de bases de datos
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: pgadmin
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@microservices.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - microservices-network
+    depends_on:
+      products-db:
+        condition: service_healthy
+      inventory-db:
+        condition: service_healthy
+
+# Volúmenes para persistencia de datos
+volumes:
+  products_data:
+    driver: local
+    name: microservices_products_data
+  inventory_data:
+    driver: local
+    name: microservices_inventory_data
+  pgadmin_data:
+    driver: local
+    name: microservices_pgadmin_data
+
+# Red personalizada
+networks:
+  microservices-network:
+    driver: bridge
+    name: microservices-network
